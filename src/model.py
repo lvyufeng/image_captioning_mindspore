@@ -15,12 +15,21 @@ class Encoder(nn.Cell):
         self.resnet = nn.SequentialCell(*modules)
 
         self.adaptive_pool = AdaptiveAvgPool2d((encoded_image_size, encoded_image_size))
+        self.fine_tune()
 
     def construct(self, images):
         out = self.resnet(images)
         out = self.adaptive_pool(out)
         out = out.transpose(0, 2, 3, 1)
         return out
+    
+    def fine_tune(self, fine_tune=True):
+        for p in self.resnet.get_parameters():
+            p.requires_grad = False
+        
+        for c in list(self.resnet.cells())[5:]:
+            for p in c.get_parameters():
+                p.requires_grad = fine_tune
 
 class Attention(nn.Cell):
     def __init__(self, encoder_dim, decoder_dim, attention_dim):
@@ -76,7 +85,6 @@ class Decoder(nn.Cell):
 
         # Flatten image
         encoder_out = encoder_out.view(batch_size, -1, self.encoder_dim)
-        num_pixels = encoder_out.shape[1]
 
         # Embedding
         embeddings = self.embedding(captions)
@@ -96,7 +104,7 @@ class Decoder(nn.Cell):
             preds = self.fc(self.dropout(h))
             predictions.append(preds)
             alphas.append(alpha)
-        
+
         predictions = ops.Stack(1)(predictions)
         alphas = ops.Stack(1)(alphas)
 
@@ -118,3 +126,22 @@ class Img2Seq(nn.Cell):
         loss += self.alpha_c * ((1.0 - alphas.sum(axis=1)) ** 2).mean()
         return loss
 
+class TrainOneStepCell(nn.Cell):
+    def __init__(self, network, encoder_optimizer, decoder_optimizer):
+        super(TrainOneStepCell, self).__init__(auto_prefix=False)
+        self.network = network
+        self.network.set_grad()
+        self.encoder_optimizer = encoder_optimizer
+        self.decoder_optimizer = decoder_optimizer
+        self.weights = self.encoder_optimizer.parameters + self.decoder_optimizer.parameters
+        self.grad_split = len(encoder_optimizer.parameters)
+        self.grad = ops.GradOperation(get_by_list=True, sens_param=True)
+
+    def construct(self, *inputs):
+        loss = self.network(*inputs)
+        sens = ops.fill(loss.dtype, loss.shape, self.sens)
+        grads = self.grad(self.network, self.weights)(*inputs, sens)
+        grads = self.grad_reducer(grads)
+        self.encoder_optimizer(grads[:self.grad_split])
+        self.decoder_optimizer(grads[self.grad_split:])
+        return loss
