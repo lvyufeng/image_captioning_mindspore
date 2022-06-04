@@ -1,10 +1,30 @@
+import numpy as np
 import mindspore
 import mindspore.nn as nn
 import mindspore.ops as ops
 from .resnet.resnet import resnet101
 from .layers import AdaptiveAvgPool2d, Dense
 from mindspore.common.initializer import initializer, Uniform, Zero
+from mindspore import Tensor
+from mindspore.ops import constexpr
 
+@constexpr
+def arange(start, stop, step, dtype):
+    return Tensor(np.arange(start, stop, step), dtype)
+
+def sequence_mask(lengths, maxlen):
+    """generate mask matrix by seq_length"""
+    range_vector = arange(0, maxlen, 1, lengths.dtype)
+    result = range_vector < lengths.view(lengths.shape + (1,))
+    return result.astype(lengths.dtype)
+
+def select_by_mask(inputs, mask):
+    """mask hiddens by mask matrix"""
+    return mask.view(mask.shape + (1,)).expand_as(inputs).astype(mindspore.bool_)  * inputs
+
+def clip_grad(clip_value, grad):
+    return ops.clip_by_value(grad, ops.scalar_to_tensor(-clip_value, grad.dtype),
+                             ops.scalar_to_tensor(clip_value, grad.dtype))
 class Encoder(nn.Cell):
     def __init__(self, encoded_image_size=14):
         super().__init__()
@@ -64,7 +84,7 @@ class Decoder(nn.Cell):
 
         self.init_h = Dense(encoder_dim, decoder_dim)
         self.init_c = Dense(encoder_dim, decoder_dim)
-        self.f_beta= Dense(encoder_dim, decoder_dim)
+        self.f_beta= Dense(decoder_dim, encoder_dim)
         self.simgoid = nn.Sigmoid()
         self.fc = Dense(decoder_dim, vocab_size)
         self.init_weights()
@@ -105,8 +125,11 @@ class Decoder(nn.Cell):
             predictions.append(preds)
             alphas.append(alpha)
 
+        mask = sequence_mask(caption_lengths, captions.shape[1])
         predictions = ops.Stack(1)(predictions)
+        predictions = select_by_mask(predictions, mask)
         alphas = ops.Stack(1)(alphas)
+        alphas = select_by_mask(alphas, mask)
 
         return predictions, alphas
 
@@ -121,27 +144,40 @@ class Img2Seq(nn.Cell):
     def construct(self, images, captions, caption_lengths):
         images = self.encoder(images)
         scores, alphas = self.decoder(images, captions, caption_lengths)
-        loss = self.loss(scores, captions[:, 1:])
+        loss = self.loss(scores[:, :-1].swapaxes(1, 2), captions[:, 1:])
         # Add doubly stochastic attention regularization
         loss += self.alpha_c * ((1.0 - alphas.sum(axis=1)) ** 2).mean()
         return loss
 
 class TrainOneStepCell(nn.Cell):
-    def __init__(self, network, encoder_optimizer, decoder_optimizer):
-        super(TrainOneStepCell, self).__init__(auto_prefix=False)
+    def __init__(self, network, encoder_optimizer, decoder_optimizer, grad_clip=None, sens=1.0):
+        super(TrainOneStepCell, self).__init__()
         self.network = network
         self.network.set_grad()
         self.encoder_optimizer = encoder_optimizer
         self.decoder_optimizer = decoder_optimizer
-        self.weights = self.encoder_optimizer.parameters + self.decoder_optimizer.parameters
-        self.grad_split = len(encoder_optimizer.parameters)
+        self.grad_clip = grad_clip
+        self.sens = sens
+        if self.encoder_optimizer is not None:
+            self.weights = self.encoder_optimizer.parameters + self.decoder_optimizer.parameters
+            self.grad_split = len(encoder_optimizer.parameters)
+        else:
+            self.weights = self.decoder_optimizer.parameters
+            self.grad_split = 0
+
         self.grad = ops.GradOperation(get_by_list=True, sens_param=True)
+        self.hyper_map = ops.HyperMap()
 
     def construct(self, *inputs):
         loss = self.network(*inputs)
         sens = ops.fill(loss.dtype, loss.shape, self.sens)
         grads = self.grad(self.network, self.weights)(*inputs, sens)
-        grads = self.grad_reducer(grads)
-        self.encoder_optimizer(grads[:self.grad_split])
-        self.decoder_optimizer(grads[self.grad_split:])
+        if self.grad_clip is not None:
+            grads = self.hyper_map(ops.partial(clip_grad, self.grad_clip), grads)
+
+        if self.encoder_optimizer is not None:
+            self.encoder_optimizer(grads[:self.grad_split])
+            self.decoder_optimizer(grads[self.grad_split:])
+        else:
+            self.decoder_optimizer(grads)
         return loss
