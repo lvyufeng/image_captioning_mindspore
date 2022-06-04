@@ -125,13 +125,14 @@ class Decoder(nn.Cell):
             predictions.append(preds)
             alphas.append(alpha)
 
-        mask = sequence_mask(caption_lengths, captions.shape[1])
+        decode_cap_lens = caption_lengths - 1
+        mask = sequence_mask(decode_cap_lens, captions.shape[1])
         predictions = ops.Stack(1)(predictions)
         predictions = select_by_mask(predictions, mask)
         alphas = ops.Stack(1)(alphas)
         alphas = select_by_mask(alphas, mask)
 
-        return predictions, alphas
+        return predictions, alphas, decode_cap_lens
 
 class Img2Seq(nn.Cell):
     def __init__(self, encoder, decoder, loss, alpha_c=1.0):
@@ -143,11 +144,11 @@ class Img2Seq(nn.Cell):
 
     def construct(self, images, captions, caption_lengths, all_captions=None):
         images = self.encoder(images)
-        scores, alphas = self.decoder(images, captions, caption_lengths)
+        scores, alphas, decode_cap_lens = self.decoder(images, captions, caption_lengths)
         loss = self.loss(scores[:, :-1].swapaxes(1, 2), captions[:, 1:])
         # Add doubly stochastic attention regularization
         loss += self.alpha_c * ((1.0 - alphas.sum(axis=1)) ** 2).mean()
-        decode_cap_lens = caption_lengths - 1
+        # Compute Top5 accuracy
         top5 = self.accuracy(scores[:, :-1], captions[:, 1:], 5, decode_cap_lens)
         if all_captions is not None:
             predictions = scores.argmax(axis=2)

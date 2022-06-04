@@ -85,8 +85,11 @@ class CrossEntropyLoss(nn.Cell):
     def construct(self, input, target):
         return cross_entropy(input, target, self.weight, self.ignore_index, self.reduction, self.label_smoothing)
 
-def log_softmax(input, axis=-1):
-    return ops.log(ops.Softmax(axis)(input))
+# def log_softmax(x, axis=-1):
+#     x_max = x.max()
+#     return x - x_max - ops.log(ops.ReduceSum(True)(ops.exp(x - x_max), axis))
+def log_softmax(x, axis=-1):
+    return ops.LogSoftmax(axis)(x)
 
 def cross_entropy(input, target, weight=None, ignore_index=-100, reduction='mean', label_smoothing=0.0):
     if input.size == target.size:

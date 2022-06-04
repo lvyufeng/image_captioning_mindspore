@@ -11,6 +11,7 @@ from mindspore import context
 from nltk.translate.bleu_score import corpus_bleu
 
 # context.set_context(mode=context.PYNATIVE_MODE)
+context.set_context(enable_graph_kernel=True)
 
 # Model parameters
 embed_dim = 512  # dimension of word embeddings
@@ -30,7 +31,6 @@ decoder_lr = 4e-4  # learning rate for decoder
 grad_clip = 5.  # clip gradients at an absolute value of
 alpha_c = 1.  # regularization parameter for 'doubly stochastic attention', as in the paper
 best_bleu4 = 0.  # BLEU-4 score right now
-print_freq = 100  # print training/validation stats every __ batches
 fine_tune_encoder = False  # fine-tune encoder?
 checkpoint = None  # path to checkpoint, None if none
 
@@ -54,8 +54,8 @@ decoder_optimizer = nn.Adam(params=decoder.trainable_params(),learning_rate=deco
 
 trainer = TrainOneStepCell(model, encoder_optimizer, decoder_optimizer, grad_clip)
 
-train_dataset = create_dataset('/run/determined/workdir/coco_mindrecord/TRAIN_IMAGES_coco_5_cap_per_img_5_min_word_freq.mindrecord')
-val_dataset = create_dataset('/run/determined/workdir/coco_mindrecord/VAL_IMAGES_coco_5_cap_per_img_5_min_word_freq.mindrecord', 'val')
+train_dataset = create_dataset('/run/determined/workdir/coco_mindrecord/TRAIN_IMAGES_coco_5_cap_per_img_5_min_word_freq.mindrecord', 'train', batch_size)
+val_dataset = create_dataset('/run/determined/workdir/coco_mindrecord/VAL_IMAGES_coco_5_cap_per_img_5_min_word_freq.mindrecord', 'val', batch_size)
 
 def train_one_epoch(model, train_dataset, epoch=0):
     model.set_train()
@@ -63,7 +63,7 @@ def train_one_epoch(model, train_dataset, epoch=0):
     losses = AverageMeter()  # loss (per word decoded)
     top5accs = AverageMeter()  # top5 accuracy
     with tqdm(total=total) as t:
-        t.set_description('Epoch %i' % epoch)
+        t.set_description('Train Epoch %i' % epoch)
         for imgs, caps, caplens in train_dataset.create_tuple_iterator():
             loss, top5, cap_lens_sum = model(imgs, caps, caplens)
             losses.update(loss, cap_lens_sum)
@@ -82,7 +82,7 @@ def validation(model, val_dataset, epoch=0):
     hypotheses = []
 
     with tqdm(total=total) as t:
-        t.set_description('Epoch %i' % epoch)
+        t.set_description('Valid Epoch %i' % epoch)
         for imgs, caps, caplens, all_captions in val_dataset.create_tuple_iterator():
             loss, predictions, top5, cap_lens_sum = model(imgs, caps, caplens, all_captions)
             losses.update(loss, cap_lens_sum)

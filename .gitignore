@@ -132,3 +132,5 @@ ckpt/*
 tests/*
 data/*
 rank_0/*
+kernel_meta/*
+akg_build_tmp.key
