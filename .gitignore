@@ -131,3 +131,4 @@ convert/*
 ckpt/*
 tests/*
 data/*
+rank_0/*

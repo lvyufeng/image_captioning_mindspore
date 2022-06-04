@@ -5,7 +5,7 @@ import mindspore.ops as ops
 from .resnet.resnet import resnet101
 from .layers import AdaptiveAvgPool2d, Dense
 from mindspore.common.initializer import initializer, Uniform, Zero
-from mindspore import Tensor
+from mindspore import Tensor, Parameter
 from mindspore.ops import constexpr
 
 @constexpr
@@ -141,23 +141,35 @@ class Img2Seq(nn.Cell):
         self.loss = loss
         self.alpha_c = alpha_c
 
-    def construct(self, images, captions, caption_lengths):
+    def construct(self, images, captions, caption_lengths, all_captions=None):
         images = self.encoder(images)
         scores, alphas = self.decoder(images, captions, caption_lengths)
         loss = self.loss(scores[:, :-1].swapaxes(1, 2), captions[:, 1:])
         # Add doubly stochastic attention regularization
         loss += self.alpha_c * ((1.0 - alphas.sum(axis=1)) ** 2).mean()
-        return loss
+        decode_cap_lens = caption_lengths - 1
+        top5 = self.accuracy(scores[:, :-1], captions[:, 1:], 5, decode_cap_lens)
+        if all_captions is not None:
+            predictions = scores.argmax(axis=2)
+            return loss, predictions, top5, decode_cap_lens.sum()
+        return loss, ops.stop_gradient(top5), ops.stop_gradient(decode_cap_lens.sum())
+
+    def accuracy(self, scores, targets, k, cap_lens):
+        _, ind = ops.TopK()(scores, k)
+        mask = sequence_mask(cap_lens, targets.shape[1])
+        correct = ops.equal(ind, targets.expand_dims(2).expand_as(ind))
+        correct = select_by_mask(correct.astype(mindspore.float32), mask)
+        correct_total = correct.sum()
+        return correct_total / cap_lens.sum() * 100
 
 class TrainOneStepCell(nn.Cell):
-    def __init__(self, network, encoder_optimizer, decoder_optimizer, grad_clip=None, sens=1.0):
+    def __init__(self, network, encoder_optimizer, decoder_optimizer, grad_clip=None):
         super(TrainOneStepCell, self).__init__()
         self.network = network
         self.network.set_grad()
         self.encoder_optimizer = encoder_optimizer
         self.decoder_optimizer = decoder_optimizer
         self.grad_clip = grad_clip
-        self.sens = sens
         if self.encoder_optimizer is not None:
             self.weights = self.encoder_optimizer.parameters + self.decoder_optimizer.parameters
             self.grad_split = len(encoder_optimizer.parameters)
@@ -165,13 +177,12 @@ class TrainOneStepCell(nn.Cell):
             self.weights = self.decoder_optimizer.parameters
             self.grad_split = 0
 
-        self.grad = ops.GradOperation(get_by_list=True, sens_param=True)
+        self.grad = ops.GradOperation(get_by_list=True)
         self.hyper_map = ops.HyperMap()
 
     def construct(self, *inputs):
-        loss = self.network(*inputs)
-        sens = ops.fill(loss.dtype, loss.shape, self.sens)
-        grads = self.grad(self.network, self.weights)(*inputs, sens)
+        loss, top5, cap_lens_sum = self.network(*inputs)
+        grads = self.grad(self.network, self.weights)(*inputs)
         if self.grad_clip is not None:
             grads = self.hyper_map(ops.partial(clip_grad, self.grad_clip), grads)
 
@@ -180,4 +191,4 @@ class TrainOneStepCell(nn.Cell):
             self.decoder_optimizer(grads[self.grad_split:])
         else:
             self.decoder_optimizer(grads)
-        return loss
+        return loss, top5, cap_lens_sum
