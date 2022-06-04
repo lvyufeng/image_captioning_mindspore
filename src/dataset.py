@@ -1,4 +1,3 @@
-import numpy as np
 import mindspore.dataset as ds
 from mindspore.dataset.vision.c_transforms import Normalize, HWC2CHW
 from mindspore.dataset.transforms.c_transforms import Duplicate

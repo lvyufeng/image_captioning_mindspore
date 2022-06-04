@@ -95,8 +95,8 @@ def validation(model, val_dataset, epoch=0):
         
             assert len(references) == len(hypotheses)
 
-        bleu4 = corpus_bleu(references, hypotheses)
-        print("BLEU-4 - {}\n".format(bleu4))
+    bleu4 = corpus_bleu(references, hypotheses)
+    print("BLEU-4 - {}\n".format(bleu4))
 
     return bleu4
 

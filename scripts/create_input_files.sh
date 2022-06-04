@@ -1,0 +1,10 @@
+python src/create_input_files.py
+        --dataset coco
+        --json_path ./data/splits/dataset_coco.json
+        --image_folder ./data/coco
+        --output_folder ./data/coco_mindrecord
+        --captions_per_image 5
+        --min_word_freq 5
+        --max_len 100
+        --shard_num 1
+        --write_freq 1
